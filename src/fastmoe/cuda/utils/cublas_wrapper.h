@@ -2,6 +2,7 @@
 #define CUBLAS_WRAPPER_H
 #include <cublas_v2.h>
 #include <c10/util/Half.h>
+#include <c10/util/BFloat16.h>
 
 inline cublasStatus_t cublasXgemmBatched(cublasHandle_t handle,
                                   cublasOperation_t transa,
@@ -106,6 +107,28 @@ inline cublasStatus_t cublasXgemm(cublasHandle_t handle,
             (const __half*)B, ldb,
             (const __half*)beta,
             (__half*)C, ldc);
+#endif
+}
+
+inline cublasStatus_t cublasXgemm(cublasHandle_t handle,
+                                cublasOperation_t transa, cublasOperation_t transb,
+                                int m, int n, int k,
+                                const c10::BFloat16 *alpha,
+                                const c10::BFloat16 *A, int lda,
+                                const c10::BFloat16 *B, int ldb,
+                                const c10::BFloat16 *beta,
+                                c10::BFloat16 *C, int ldc) {
+#ifdef FMOE_USE_HIP
+    // TODO: Support bf16 for HIP
+    assert(false);
+#else
+    const float alpha_fp32(*alpha), beta_fp32(*beta);
+    return cublasSgemmEx(handle, transa, transb, m, n, k,
+            (const float*)&alpha_fp32,
+            (const void*)A, CUDA_R_16BF, lda,
+            (const void*)B, CUDA_R_16BF, ldb,
+            (const float*)&beta_fp32,
+            (void*)C, CUDA_R_16BF, ldc);
 #endif
 }
 #endif  // CUBLAS_WRAPPER_H

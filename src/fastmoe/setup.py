@@ -41,13 +41,13 @@ else:
 if __name__ == '__main__':
     setuptools.setup(
         name='fastmoe',
-        version='1.0.0',
+        version='1.1.0',
         description='An efficient Mixture-of-Experts system for PyTorch',
         author=', '.join(authors),
         author_email='hja20@mails.tsinghua.edu.cn',
         license='Apache-2',
         url='https://github.com/laekov/fastmoe',
-        packages=['fmoe', 'fmoe.megatron', 'fmoe.gates', 'fmoe.fastermoe', 'fmoe.smartmoe'],
+        packages=['fmoe', 'fmoe.megatron', 'fmoe.gates', 'fmoe.fastermoe'],
         ext_modules=[
             CUDAExtension(
                 name='fmoe_cuda', 
@@ -66,7 +66,7 @@ if __name__ == '__main__':
                     'nvcc': cxx_flags
                     },
                 libraries=ext_libs
-                ),
+                )
             ],
         cmdclass={
             'build_ext': BuildExtension

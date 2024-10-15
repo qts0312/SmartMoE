@@ -18,9 +18,9 @@ class NaiveGate(BaseGate):
     `Gate` module.
     """
 
-    def __init__(self, d_model, num_expert, world_size, top_k=2):
+    def __init__(self, d_model, num_expert, world_size, top_k=2, gate_bias=True):
         super().__init__(num_expert, world_size)
-        self.gate = nn.Linear(d_model, self.tot_expert)
+        self.gate = nn.Linear(d_model, self.tot_expert, bias = gate_bias)
         self.top_k = top_k
 
     def forward(self, inp, return_all_scores=False):
@@ -36,8 +36,9 @@ class NaiveGate(BaseGate):
 
         # (BxL) x 1 x top_k
         gate_score = F.softmax(gate_top_k_val, dim=-1)
-        
-        self.set_loss(torch.zeros(1, requires_grad=True).cuda())
+
+        # dummy loss
+        self.set_loss(torch.zeros(1, requires_grad=True).to(inp.device))
 
         if return_all_scores:
             return gate_top_k_idx, gate_score, gate

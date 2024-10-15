@@ -1,3 +1,39 @@
+## v1.1.0
+
+### Performance
+
+* Smart schedule of FasterMoE is updated with correct stream management, and becomes faster.
+
+### Testing
+
+* All unit tests are checked and they run correctly now.
+
+### Adaption
+
+* Megatron-LM 3.2 supported.
+
+### Documentation
+
+* README is updated with some bugs fixed.
+* A detailed [document for process groups](/doc/parallelism).
+
+
+## v1.0.1
+
+### Compatibility
+
+* PyTorch 2.0 supported.
+* Megatron-LM 2.5 supported.
+
+### Documentation
+
+* A detailed [installation-guide](/doc/installation-guide.md) thanks to @santurini
+
+### Performance related
+
+* Generalize FasterMoE's schedule to `n_expert > 1` and more bug fixes.
+* Synchronization reduction thanks to @Fragile-azalea
+
 ## v1.0.0
 
 ### FasterMoE

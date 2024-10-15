@@ -4,13 +4,7 @@ import torch
 def get_expert_param_size(e, idx):
     e = e[idx]
     return sum(map(lambda x: x.numel(), e.parameters()))
-
-
-def get_expert_param_dtype(e, idx):
-    e = e[idx]
-    for n, p in e.named_parameters():
-        return p.data.dtype
-
+    
 
 def get_expert_params(e, out, idx):
     e = e[idx]
@@ -52,6 +46,7 @@ def pop_expert_params(e, idx):
     e.expert_param_stash.clear()
     e.expert_grad_stash.clear()
 
+
 def collect_expert_grads(e, grads, idx):
     e = e[idx]
     offset = 0
@@ -75,14 +70,3 @@ def set_grads(e, grads, idx):
             p.grad = seg.clone().reshape(p.shape)
         else:
             p.grad += seg.reshape(p.shape)
-
-
-def set_params(e, params, idx):
-    e = e[idx]
-    offset = 0
-    for n, p in e.named_parameters():
-        with torch.no_grad():
-            seg = params[offset:offset + p.numel()]
-            offset += p.numel()
-            p.copy_(seg.reshape(p.shape))
-            p.grad = None

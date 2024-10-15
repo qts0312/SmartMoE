@@ -14,7 +14,11 @@ model for PyTorch.
 ### Prerequisites
 
 PyTorch with CUDA is required. The repository is currently tested with PyTorch
-v1.8.0 and CUDA 10, with designed compatibility to older versions.
+v1.10.0 and CUDA 11.3, with designed compatibility to older and newer versions.
+
+The minimum version of supported PyTorch is `1.7.2` with CUDA `10`. However,
+there are a few known issues that requires manual modification of FastMoE's
+code with specific older dependents.
 
 If the distributed expert feature is enabled, NCCL with P2P communication
 support, typically versions `>=2.7.5`, is needed. 
@@ -25,8 +29,10 @@ FastMoE contains a set of PyTorch customized opearators, including both C and
 Python components. Use `python setup.py install` to easily install and enjoy
 using FastMoE for training.
 
-The distributed expert feature is disabled by default. If you want to enable
-it, pass environment variable `USE_NCCL=1` to the setup script.
+A step-by-step tutorial for the installation procedure can be found [here](doc/installation-guide.md).
+
+The distributed expert feature is enabled by default. If you want to disable
+it, pass environment variable `USE_NCCL=0` to the setup script.
 
 Note that an extra NCCL developer package is needed, which has to be consistent
 with your PyTorch's NCCL version, which can be inspected by running
@@ -53,7 +59,7 @@ multiple experts.
 model = ...
 
 from fmoe.megatron import fmoefy
-model = fmoefy(model, num_experts=<number of experts per worker>)
+model = fmoefy(model, fmoe_num_experts=<number of experts per worker>)
 
 train(model, ...)
 ```
@@ -69,7 +75,9 @@ the MLP layer by the `FMoE` layers.
 
 ### Using FastMoE in Parallel
 
-FastMoE supports both data parallel and model parallel. 
+FastMoE supports multiple ways of parallel training. See [a comprehensive
+document for parallelism](doc/parallelism) for details. Below shows the two
+simplest ways of using FastMoE in parallel.
 
 #### Data Parallel
 
@@ -77,27 +85,28 @@ In FastMoE's data parallel mode, both the gate and the experts are replicated on
 The following figure shows the forward pass of a 3-expert MoE with 2-way data parallel.
 
 <p align="center">
-<img src="doc/fastmoe_data_parallel.png" width="600">
+<img src="doc/parallelism/fastmoe_data_parallel.png" width="600">
 </p>
 
 For data parallel, no extra coding is needed. FastMoE works seamlessly with PyTorch's `DataParallel` or `DistributedDataParallel`.
 The only drawback of data parallel is that the number of experts is constrained by each worker's memory.
 
-#### Model Parallel
+#### Expert Parallel (also called Model Parlallel in some previous versions)
 
-In FastMoE's model parallel mode, the gate network is still replicated on each worker but
+In FastMoE's expert parallel mode, the gate network is still replicated on each worker but
 experts are placed separately across workers.
 Thus, by introducing additional communication cost, FastMoE enjoys a large expert pool whose size is proportional to the number of workers.
 
 The following figure shows the forward pass of a 6-expert MoE with 2-way model parallel. Note that experts 1-3 are located in worker 1 while experts 4-6 are located in worker 2.
 
 <p align="center">
-<img src="doc/fastmoe_model_parallel.png" width="600">
+<img src="doc/parallelism/fastmoe_expert_parallel.png" width="600">
 </p>
 
-FastMoE's model parallel requires sophiscated parallel strategies that neither PyTorch nor
-Megatron-LM provides. The `fmoe.DistributedGroupedDataParallel` module is
-introduced to replace PyTorch's DDP module.
+FastMoE's expert parallel requires sophiscated parallel strategies that neither
+PyTorch nor Megatron-LM provided when FastMoE was created. The
+`fmoe.DistributedGroupedDataParallel` module is introduced to replace PyTorch's
+DDP module.
 
 #### Faster Performance Features
 

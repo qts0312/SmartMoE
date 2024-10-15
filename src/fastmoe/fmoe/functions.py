@@ -4,16 +4,26 @@ C/CUDA functions to complete distributed communication, computation and gradient
 computation.
 """
 
-from threading import local
 import torch
 from torch.autograd import Function
 import fmoe_cuda
 from .utils import get_torch_default_comm
 
+
+_moe_group = None
+
+
 def ensure_comm(t, comm):
     if comm is None:
         comm = get_torch_default_comm()
+    global _moe_group
+    _moe_group = comm
     fmoe_cuda.ensure_nccl(comm, t)
+
+
+def get_moe_group():
+    return _moe_group
+
 
 def count_by_gate(gate, num_expert, world_size, require_pos=True):
     with torch.no_grad():
@@ -53,7 +63,8 @@ def prepare_forward(gate, num_expert, world_size):
     pos, local_expert_count, global_expert_count = count_by_gate(gate, 
             num_expert, world_size)
     with torch.no_grad():
-        fwd_expert_count = global_expert_count.view(world_size, num_expert).sum(dim=0)
+        fwd_expert_count = global_expert_count.view(world_size,
+                num_expert).sum(dim=0)
         fwd_batch_size = int(fwd_expert_count.sum().item())
     return (
         pos,

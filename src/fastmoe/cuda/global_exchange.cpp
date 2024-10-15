@@ -19,17 +19,16 @@ void fmoe_cuda_expert_exchange_impl(
                 ncclInt64,
                 i,
                 smgr->ncclcomm,
-                smgr->stream(0)));
+                smgr->torchStream()));
         NCCL_SAFE_CALL(ncclRecv(
                 global_expert_count + n_expert * i,
                 n_expert,
                 ncclInt64,
                 i,
                 smgr->ncclcomm,
-                smgr->stream(0)));
+                smgr->torchStream()));
     }
     NCCL_SAFE_CALL(ncclGroupEnd());
-    smgr->sync(1);
 }
 
 torch::Tensor _expert_exchange(
@@ -58,8 +57,8 @@ torch::Tensor _global_scatter(
     auto global_input_buf = input_buf.new_empty({batch_size, in_feat});
     auto smgr = getCudaStreamManager(input_buf.device().index());
 
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(input_buf.scalar_type(),
-            "fmoe_cuda_global_scatter", ([&] {
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+            input_buf.scalar_type(), "fmoe_cuda_global_scatter", ([&] {
         fmoe_cuda_global_scatter_impl<scalar_t>(
             input_buf.data_ptr<scalar_t>(),
             local_expert_count.data_ptr<long>(),
@@ -84,8 +83,8 @@ torch::Tensor _global_gather(
     auto local_output_buf = output_buf.new_empty({batch_size, out_feat});
     auto smgr = getCudaStreamManager(output_buf.device().index());
 
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(output_buf.scalar_type(),
-            "fmoe_cuda_global_gather", ([&] {
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+            output_buf.scalar_type(), "fmoe_cuda_global_gather", ([&] {
         fmoe_cuda_global_gather_impl<scalar_t>(
             output_buf.data_ptr<scalar_t>(),
             local_expert_count.data_ptr<long>(),
@@ -98,7 +97,13 @@ torch::Tensor _global_gather(
     return local_output_buf;
 }
 
+#if defined(TORCH_VERSION_MAJOR) && (TORCH_VERSION_MAJOR > 1 || \
+        (TORCH_VERSION_MAJOR == 1 && TORCH_VERSION_MINOR >= 13))
+#include <torch/csrc/distributed/c10d/ProcessGroup.hpp>
+#include <torch/csrc/distributed/c10d/ProcessGroupNCCL.hpp>
+#else
 #include <c10d/ProcessGroupNCCL.hpp>
+#endif
 
 class HackNCCLGroup: public c10d::ProcessGroupNCCL {
 public:
@@ -129,12 +134,21 @@ public:
     }
 };
 
+#if defined(TORCH_VERSION_MAJOR) && (TORCH_VERSION_MAJOR >= 2)
+void _ensure_nccl(c10d::ProcessGroup& p, torch::Tensor t) {
+#else
 void _ensure_nccl(c10d::ProcessGroupNCCL& p, torch::Tensor t) {
+#endif  // TORCH_VERSION
     auto smgr = getCudaStreamManager(t.device().index());
     if (smgr->ncclgood) {
         return;
     }
+#if defined(TORCH_VERSION_MAJOR) && (TORCH_VERSION_MAJOR >= 2)
+    HackNCCLGroup* h = (HackNCCLGroup*)(void*)
+        (p.getBackend(c10d::ProcessGroup::NCCL).get());
+#else
     HackNCCLGroup* h = (HackNCCLGroup*)(void*)&p;
+#endif  // TORCH_VERSION
     smgr->ncclcomm = h->getcomm(t.device());
     if (smgr->ncclcomm != 0) {
         smgr->ncclgood = 1;

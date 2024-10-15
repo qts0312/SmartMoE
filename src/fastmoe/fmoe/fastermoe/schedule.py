@@ -18,7 +18,7 @@ class MoEForward(Function):
             ctx,
             expert_fn,
             experts,
-            inp,
+            inp, # models,
             pos_s, pos_g,
             local_expert_count, global_expert_count,
             stored_models,
@@ -34,8 +34,13 @@ class MoEForward(Function):
             x = x.data
             with torch.enable_grad():
                 x.requires_grad = True
-                # To skip torch autograd's version check.
-                with torch.autograd.graph.saved_tensors_hooks(nothing, nothing):
+                try:
+                    # To skip torch autograd's version check.
+                    with torch.autograd.graph.saved_tensors_hooks(nothing, nothing):
+                        y0 = expert_fn(x, torch.tensor([x.shape[0]], dtype=torch.int64), expert_idx)
+                except Exception as e:
+                    # Ignore the error and fall back for compatibility to older
+                    # versions of PyTorch
                     y0 = expert_fn(x, torch.tensor([x.shape[0]], dtype=torch.int64), expert_idx)
             ctx.gibs[store_idx] = x
             ctx.gobs[store_idx] = y0
@@ -45,7 +50,7 @@ class MoEForward(Function):
         if stored_models.any():
             ctx.expert_size = expert_utils.get_expert_param_size(experts, 0)
             for i in range(num_expert):
-                assert ctx.expert_size == expert_utils.get_expert_param_size(experts, i), "report bug"
+                assert ctx.expert_size == expert_utils.get_expert_param_size(experts, i), "report bug"            
         else:
             ctx.expert_size = 0
         get_param_fn = lambda out, idx: expert_utils.get_expert_params(experts, out, idx)
@@ -111,7 +116,9 @@ class MoEForward(Function):
 
 policy_fn = None
 
-def _fmoe_general_global_forward(inp, gate, expert_fn, n_expert, world_size, experts=None, stored_models=None, is_first_micro_batch=True, is_last_micro_batch=True, force_no_shadow=False, **kwargs):
+
+def _fmoe_general_global_forward(inp, gate, expert_fn, n_expert, world_size, experts=None, stored_models=None):
+    # TODO: Using multiple tensors as input is to be supported.
     assert(isinstance(inp, torch.Tensor))
     (
         pos,
@@ -123,11 +130,11 @@ def _fmoe_general_global_forward(inp, gate, expert_fn, n_expert, world_size, exp
 
     global policy_fn
     if policy_fn is None:
-        policy_fn = get_shadow_policy(force_no_shadow, d_model=inp.shape[-1])
+        policy_fn = get_shadow_policy(d_model=inp.shape[-1])
 
     if stored_models is None:
         stored_models = policy_fn(local_expert_count, global_expert_count,
-                n_expert, world_size, is_first_micro_batch, is_last_micro_batch)
+                n_expert, world_size, inp.device)
 
     topk = 1
     if len(gate.shape) == 2:

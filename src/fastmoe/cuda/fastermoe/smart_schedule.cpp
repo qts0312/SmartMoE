@@ -8,7 +8,7 @@
 #include "smart_schedule.h"
 #include "status.h"
 
-static long pipeline_gran = -1;
+long pipeline_gran = -1;
 
 int smart_sch_enabled = 0;
 
@@ -44,16 +44,15 @@ void _reduce_grad(
         long expert_size) {
     auto smgr = getCudaStreamManager(t.device().index());
 
-    auto torch_stream = c10::cuda::getCurrentCUDAStream().stream();
     cudaEvent_t evt_stash;
     cudaEventCreate(&evt_stash);
-    cudaEventRecord(evt_stash, torch_stream);
-    cudaStreamWaitEvent(smgr->stream(0), evt_stash, 0);
+    cudaEventRecord(evt_stash, smgr->torchStream());
+    FMOE_SWE(smgr->stream(0), evt_stash);
     cudaEventDestroy(evt_stash);
 
     auto dtype = getNcclDataType(t.scalar_type());
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(t.scalar_type(),
-        "fmoe_cuda_reduce_grad", ([&] {
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+            t.scalar_type(), "fmoe_cuda_reduce_grad", ([&] {
             void* buf = (void*)t.data_ptr<scalar_t>();
             NCCL_SAFE_CALL(ncclReduce(buf, buf, expert_size,
                         dtype,
@@ -110,8 +109,8 @@ std::vector<torch::Tensor> _smart_sch_forward(
         }
     }
 
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(input_buf.scalar_type(),
-            "fmoe_cuda_smart_sch_forward", ([&] {
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+            input_buf.scalar_type(), "fmoe_cuda_smart_sch_forward", ([&] {
         fmoe_cuda_fused_forward_impl(
             forward_fn,
             stash_fn,

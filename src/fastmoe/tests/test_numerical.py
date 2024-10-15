@@ -50,9 +50,14 @@ def _perform_forward(
 
 def _assert_numerical(names, moe_out_list, raw_out_list, rank, precision=1e-3):
     for name, mo, ro in zip(names, moe_out_list, raw_out_list):
+        if mo is None and ro is None:
+            continue
+        if mo is None or ro is None:
+            assert False
         err = (mo - ro).abs().max()
-        if err > 1e-9:
-            print("Rank {} {} abs err {}".format(rank, name, err))
+        if err.dtype == torch.bfloat16 or err.dtype == torch.float16:
+            precision *= 100
+        print("Rank {} {} abs err {}".format(rank, name, err))
         if err > precision:
             sys.stderr.write(f"=========== {name} moe out ==============\n")
             sys.stderr.write("{}\n".format(mo))
@@ -72,7 +77,7 @@ class MyMoE(FMoE):
             d_model=d_model,
             gate=NaiveGate,
             world_size=world_size,
-            mp_group=mp_group,
+            slice_group=mp_group,
             top_k=top_k,
         )
         self.experts = _Expert(num_expert, d_model, d_hidden, activation)
@@ -92,7 +97,7 @@ class MyMoE(FMoE):
 @pytest.mark.parametrize("mp_group", [None])
 @pytest.mark.parametrize("dp_group", [None])
 @pytest.mark.parametrize("world_group", [None])
-@pytest.mark.parametrize("data_type", ['torch.FloatTensor', 'torch.DoubleTensor', 'torch.HalfTensor'])
+@pytest.mark.parametrize("data_type", ['torch.float32', 'torch.bfloat16', 'torch.float16'])
 def test_fmoe_linear(
     num_expert,
     top_k,
@@ -109,6 +114,9 @@ def test_fmoe_linear(
 ):
     torch.manual_seed(42 + rank)
     torch.cuda.manual_seed(42 + rank)
+
+    if isinstance(data_type, str):
+        data_type = eval(data_type)
 
     moe = MyMoE(
         num_expert, d_model, d_hidden, world_size, mp_group, top_k, activation
@@ -218,6 +226,7 @@ def test_fmoe_linear(
 @pytest.mark.parametrize("mp_group", [None])
 @pytest.mark.parametrize("dp_group", [None])
 @pytest.mark.parametrize("world_group", [None])
+@pytest.mark.parametrize("data_type", [torch.float32, torch.float16, torch.bfloat16])
 def test_fmoe(
     batch_size,
     num_expert,
@@ -229,12 +238,16 @@ def test_fmoe(
     mp_group,
     dp_group,
     world_group,
+    data_type
 ):
     torch.manual_seed(42 + rank)
     torch.cuda.manual_seed(42 + rank)
 
     if isinstance(expert, str):
         expert = globals()[expert]
+        assert(expert is not None)
+    if isinstance(data_type, str):
+        data_type = eval(data_type)
 
     moe = FMoE(
         num_expert=num_expert,
@@ -244,7 +257,7 @@ def test_fmoe(
         mp_group=mp_group,
         expert=expert,
         top_k=top_k,
-    ).cuda()
+    ).cuda().type(data_type)
 
     moe_raw = BruteForceMoE(
         expert=expert,
@@ -252,7 +265,7 @@ def test_fmoe(
         d_model=d_model,
         world_size=world_size,
         top_k=top_k,
-    ).cuda()
+    ).cuda().type(data_type)
 
     if world_size == 1:
         for expert_moe, expert_raw in zip(moe.experts, moe_raw.experts):
@@ -263,9 +276,11 @@ def test_fmoe(
     else:
         assert len(moe.experts) >= 1
         for idx, para in enumerate(moe.experts[0].parameters()):
+            assert(para.device.type == 'cuda')
             para_tensor = torch.cat(
                 [list(expert.parameters())[idx].unsqueeze(0) for expert in moe.experts]
             )
+            assert(para_tensor.device.type == 'cuda')
             para_array = [torch.empty_like(para_tensor) for _ in range(world_size)]
             torch.distributed.all_gather(para_array, para_tensor)
             para_tensor_gathered = torch.cat(para_array, dim=0)
@@ -276,7 +291,7 @@ def test_fmoe(
                 ].data = para_tensor_gathered[expertID]
 
     moe_out, raw_out, moe_grad_in, raw_grad_in = _perform_forward(
-        moe, moe_raw, batch_size, d_model, top_k, rank, mp_group
+        moe, moe_raw, batch_size, d_model, top_k, rank, mp_group, data_type
     )
 
     def get_experts_grad(experts: List[nn.Module]):
@@ -345,6 +360,7 @@ def _test_fmoe_local_ddp(rank, world_size, mp_group, dp_group, world_group):
     model = MyModule().cuda()
     model_ddp = LocalDDP(deepcopy(model),
             mp_group=mp_group, dp_group=dp_group, world_group=world_group)
+    model = deepcopy(model_ddp.module)
     model.set_comm()
     model_ddp.module.set_comm()
 
@@ -396,6 +412,7 @@ def _test_fmoe_local_ddp(rank, world_size, mp_group, dp_group, world_group):
 @pytest.mark.parametrize("mp_group", [None])
 @pytest.mark.parametrize("dp_group", [None])
 @pytest.mark.parametrize("world_group", [None])
+@pytest.mark.parametrize("data_type", [torch.float32])
 def test_fmoe_experts(
     batch_size,
     num_expert,
@@ -407,12 +424,15 @@ def test_fmoe_experts(
     mp_group,
     dp_group,
     world_group,
+    data_type
 ):
     torch.manual_seed(42 + rank)
     torch.cuda.manual_seed(42 + rank)
 
     if isinstance(expert, str):
         expert = globals()[expert]
+    if isinstance(data_type, str):
+        data_type = eval(data_type)
 
     moe = FMoE(
         num_expert=num_expert,
@@ -422,7 +442,7 @@ def test_fmoe_experts(
         mp_group=mp_group,
         expert=expert,
         top_k=top_k,
-    ).cuda()
+    ).cuda().type(data_type)
 
     moe_raw = BruteForceMoE(
         expert=expert,
@@ -430,7 +450,7 @@ def test_fmoe_experts(
         d_model=d_model,
         world_size=world_size,
         top_k=top_k,
-    ).cuda()
+    ).cuda().to(data_type)
 
     if world_size == 1:
         for expert_moe, expert_raw in zip(moe.experts, moe_raw.experts):
@@ -441,9 +461,12 @@ def test_fmoe_experts(
     else:
         assert len(moe.experts) >= 1
         for idx, para in enumerate(moe.experts[0].parameters()):
+            for ep in expert.parameters():
+                assert(ep.device.type == 'cuda')
             para_tensor = torch.cat(
                 [list(expert.parameters())[idx].unsqueeze(0) for expert in moe.experts]
             )
+            assert(para_tensor.device.type == 'cuda')
             para_array = [torch.empty_like(para_tensor) for _ in range(world_size)]
             torch.distributed.all_gather(para_array, para_tensor)
             para_tensor_gathered = torch.cat(para_array, dim=0)
@@ -454,7 +477,7 @@ def test_fmoe_experts(
                 ].data = para_tensor_gathered[expertID]
 
     moe_out, raw_out, moe_grad_in, raw_grad_in = _perform_forward(
-        moe, moe_raw, batch_size, d_model, top_k, rank, mp_group
+        moe, moe_raw, batch_size, d_model, top_k, rank, mp_group, data_type
     )
 
     def get_experts_grad(experts: List[nn.Module]):
@@ -488,16 +511,16 @@ def test_fmoe_experts(
 
 
 if __name__ == "__main__":
-    test_fmoe_linear(
+    test_fmoe(
         batch_size=2,
         num_expert=2,
         d_model=2,
         top_k=2,
-        d_hidden=16,
+        expert=[NaiveExpert for _ in range(4)],
         rank=0,
         world_size=1,
         mp_group=None,
         dp_group=None,
         world_group=None,
-        data_type=torch.float32,
+        data_type=torch.bfloat16
     )

@@ -134,9 +134,9 @@ if __name__ == "__main__":
         rank = 0
         world_size = 1
     batch_size = int(os.environ.get("BATCH_SIZE", "4096"))
-    d_model = int(os.environ.get("D_MODEL", "2048"))
-    d_hidden = int(os.environ.get("D_HIDDEN", "2048"))
-    num_expert = int(os.environ.get("NUM_EXPERT", "8"))
+    d_model = int(os.environ.get("D_MODEL", "1024"))
+    d_hidden = int(os.environ.get("D_HIDDEN", "4096"))
+    num_expert = int(os.environ.get("NUM_EXPERT", "64"))
     top_k = int(os.environ.get("TOP_K", "2"))
     benchmark_mlp(FMoETransformerMLP, batch_size, d_model, d_hidden, num_expert, top_k)
     if world_size == 1:

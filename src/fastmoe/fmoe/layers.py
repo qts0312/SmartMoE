@@ -9,13 +9,10 @@ import torch.nn as nn
 from .functions import prepare_forward, ensure_comm
 from .functions import MOEScatter, MOEGather
 from .functions import AllGather, Slice
-from .gates import NaiveGate, FileGate
+from .gates import NaiveGate
 
 from .fastermoe.config import switch_from_env
-from .utils import get_torch_default_comm
-from .fastermoe.expert_utils import get_expert_param_size, get_expert_param_dtype, get_expert_params, set_params
 
-from .smartmoe import generate_mapping_from_history
 
 def mark_module_parallel_comm(module, comm):
     r"""
@@ -100,10 +97,16 @@ class FMoE(nn.Module):
     the output. For each worker, FMoE only computes the output of a certain
     slice of the input batch, and will all-gather the outputs after
     computation.
+    * `mp_group` is a deprecated alias of `slice_group`
+    * `moe_group` stands for the group of process that performs expert
+    parallelism. The default value `None` means all processes. See the
+    parallelism document for more details of the groups.
     * `top_k` stands for the number of experts each token is going to.
     * `gate` is a gate class which can found in `fmoe.gates`.
     * `expert` can be specified as a module class, it is used to generate
     `num_expert` expert modules.
+    * `gate_bias` is only valid for naive_gate and its subclasses, it means
+    whether to add bias to the gate module.
     """
 
     def __init__(
@@ -120,37 +123,12 @@ class FMoE(nn.Module):
         gate_hook=None,
         mask=None,
         mask_dict=None,
-        is_benchmark=False,
-        args=None
+        gate_bias=True,
     ):
         super().__init__()
         self.num_expert = num_expert
         self.d_model = d_model
         self.world_size = world_size
-        self.tot_expert = num_expert * world_size
-
-        if not is_benchmark:
-            from .megatron.distributed import get_gate_group_fn,get_expert_ep_group_fn
-            from .fastermoe.config import switch_from_env
-            
-            self.dynamic_placement = args.dynamic_placement
-            self.dynamic_freq = args.dynamic_freq
-            
-            self.gate_group = get_gate_group_fn()
-            self.ep_group = get_expert_ep_group_fn()
-            self.rank = torch.distributed.get_rank(group=self.ep_group)
-            self.is_ep_global = False
-        else:
-            self.ep_group = get_torch_default_comm()
-            self.rank = torch.distributed.get_rank()
-            self.is_ep_global = True
-
-        # expert i is place on expert_mapping[i]
-        self.expert_mapping = [idx for idx in range(self.tot_expert)]
-
-        self.gate_history = torch.zeros(self.tot_expert).cuda()
-        self.history_cnt = 0
-        self.iter_cnt = 0
 
         self.slice_group = slice_group
         if mp_group is not None:
@@ -173,23 +151,15 @@ class FMoE(nn.Module):
             self.experts_fused = False
         else:
             self.experts_fused = True
-        
-        self.is_benchmark = is_benchmark
 
-        self.gate = gate(d_model, num_expert, world_size, top_k)
+        if issubclass(gate, NaiveGate):
+            self.gate = gate(d_model, num_expert, world_size, top_k, gate_bias=gate_bias)
+        else:
+            self.gate = gate(d_model, num_expert, world_size, top_k)
         self.gate_hook = gate_hook
         self.mask = mask
         self.mask_dict = mask_dict
         self.moe_group = moe_group
-
-        self.ex = self.expert_fn 
-
-        global fmoe_faster_schedule
-        if fmoe_faster_schedule :
-            self.ex = self.expert_fn_single
-
-        global _fmoe_general_global_forward
-        self.fwd_fn = _fmoe_general_global_forward
 
     def expert_fn(self, inp, fwd_expert_count):
         r"""
@@ -208,7 +178,7 @@ class FMoE(nn.Module):
             outputs.append(self.experts[i](inp_slice, torch.tensor([fwd_expert_count[i]])))
             base_idx += batch_size
         return torch.cat(outputs, dim=0)
-    
+
     def expert_fn_single(self, inp, fwd_expert_count, idx):
         r"""
         forward single expert for smart scheduling.
@@ -232,104 +202,12 @@ class FMoE(nn.Module):
                 mark_module_parallel_comm(self.experts, comm)
         mark_module_parallel_comm(self.gate, "gate")
 
-    def update_gate_history(self, gate_top_k_idx):
-        with torch.no_grad():
-            buffer = torch.zeros(self.tot_expert).cuda()
-            valid_idx = gate_top_k_idx[gate_top_k_idx > -1]
-            buffer.scatter_add_(0,
-                valid_idx.view(-1),
-                torch.ones_like(valid_idx.view(-1), dtype=torch.float)
-            )
-
-            self.gate_history = (self.gate_history * self.history_cnt + buffer) / (self.history_cnt + 1)
-            self.history_cnt += 1
-
-    def is_same_mapping(self, new_mapping):
-        with torch.no_grad():
-            for idx in range(self.tot_expert):
-                if new_mapping[idx] != self.expert_mapping[idx]:
-                    return False
-            return True
-
-    def update_expert_mapping(self, new_mapping):
-        with torch.no_grad():
-            assert isinstance(self.experts, nn.ModuleList)
-            self.gate_history = torch.zeros(self.tot_expert).cuda()
-            self.history_cnt = 0
-
-            if self.is_same_mapping(new_mapping):
-                # nothing need to do
-                return
-            if self.rank == 0:
-                print("[INFO] mapping updated!", flush=True)
-            
-            my_send = []
-            my_recv = []
-            params_size = get_expert_param_size(self.experts, 0)
-            params_type = get_expert_param_dtype(self.experts, 0)
-            send_buffer = torch.zeros(params_size, dtype=params_type).cuda()
-            recv_list = []
-            for idx in range(self.num_expert*self.world_size):
-                if self.expert_mapping[idx] == new_mapping[idx]:
-                    continue
-                if self.expert_mapping[idx] // self.num_expert == self.rank:
-                    local_idx = self.expert_mapping[idx] % self.num_expert
-                    to_rank = new_mapping[idx] // self.num_expert
-                    to_local_idx = new_mapping[idx] % self.num_expert
-                    my_send.append((local_idx,to_rank,to_local_idx))
-                    get_expert_params(self.experts, send_buffer, local_idx)
-                    if to_rank != self.rank:
-                        if self.is_ep_global:
-                            global_to_rank = to_rank
-                        else:
-                            global_to_rank = torch.distributed.distributed_c10d._get_global_rank(self.ep_group, to_rank)
-                        torch.distributed.isend(send_buffer, global_to_rank).wait()
-
-                if new_mapping[idx] // self.num_expert == self.rank:
-                    from_local_idx = self.expert_mapping[idx] % self.num_expert
-                    from_rank = self.expert_mapping[idx] // self.num_expert
-                    local_idx = new_mapping[idx] % self.num_expert
-                    my_recv.append((local_idx, from_rank, from_local_idx))
-                    recv_buffer = torch.zeros_like(send_buffer)
-                    if from_rank != self.rank:
-                        if self.is_ep_global:
-                            global_from_rank = from_rank
-                        else:
-                            global_from_rank = torch.distributed.distributed_c10d._get_global_rank(self.ep_group, from_rank)
-                        torch.distributed.irecv(recv_buffer, global_from_rank).wait()
-                    else:
-                        recv_buffer = send_buffer.data.clone()
-                    recv_list.append(recv_buffer)
-
-            for recv_idx in range(len(recv_list)):
-                set_params(self.experts, recv_list[recv_idx], my_recv[recv_idx][0])
-
-            self.expert_mapping = new_mapping
-
-    def forward(self, moe_inp, is_first_micro_batch=True, is_last_micro_batch=True, benchmark_history_gate=None, benchmark_method=None, force_no_shadow=False, benchmark_last_mapping=None):
+    def forward(self, moe_inp):
         r"""
         The FMoE module first computes gate output, and then conduct MoE forward
         according to the gate.  The score of the selected gate given by the
         expert is multiplied to the experts' output tensors as a weight.
         """
-
-        if self.is_benchmark:
-            if benchmark_last_mapping is not None:
-                self.expert_mapping = benchmark_last_mapping
-            if benchmark_history_gate is not None:
-                new_mapping = generate_mapping_from_history(self.num_expert, self.world_size, self.expert_mapping, benchmark_history_gate, method=benchmark_method)
-                self.update_expert_mapping(new_mapping)
-                if self.rank == 0:
-                    print(new_mapping)
-                
-        else:
-            if self.dynamic_placement and is_first_micro_batch and self.iter_cnt % self.dynamic_freq == self.dynamic_freq - 1:
-                torch.distributed.all_reduce(self.gate_history, group=self.gate_group)
-
-                new_mapping = generate_mapping_from_history(self.num_expert, self.world_size, self.expert_mapping, self.gate_history.view(-1).cpu().detach().numpy())
-                self.update_expert_mapping(new_mapping)
-        
-            self.iter_cnt += is_first_micro_batch                
 
         moe_inp_batch_size = tree.flatten(
             tree.map_structure(lambda tensor: tensor.shape[0], moe_inp)
@@ -344,8 +222,8 @@ class FMoE(nn.Module):
                 ensure_comm(tensor, self.moe_group)
 
             tree.map_structure(ensure_comm_func, moe_inp)
-
         if self.slice_size > 1:
+
             def slice_func(tensor):
                 return Slice.apply(
                     tensor, self.slice_rank, self.slice_size, self.slice_group
@@ -354,15 +232,6 @@ class FMoE(nn.Module):
             moe_inp = tree.map_structure(slice_func, moe_inp)
 
         gate_top_k_idx, gate_score = self.gate(moe_inp)
-
-        if (not self.is_benchmark) and self.dynamic_placement and is_first_micro_batch and self.iter_cnt % self.dynamic_freq >= self.dynamic_freq - 2:
-            self.update_gate_history(gate_top_k_idx)
-
-        if self.is_benchmark:
-            gate_top_k_idx = gate_top_k_idx.cpu().apply_(lambda x: self.expert_mapping[x]).cuda()
-        else:
-            if self.dynamic_placement:
-                gate_top_k_idx = gate_top_k_idx.cpu().apply_(lambda x: self.expert_mapping[x]).cuda()
 
         if self.gate_hook is not None:
             self.gate_hook(gate_top_k_idx, gate_score, None)
@@ -379,18 +248,15 @@ class FMoE(nn.Module):
             moe_inp = tree.map_structure(delete_mask_func, moe_inp)
             gate_top_k_idx = gate_top_k_idx[mask == 0, :]
 
-        fwd = self.fwd_fn(
-            moe_inp, gate_top_k_idx, self.ex,
+        fwd = _fmoe_general_global_forward(
+            moe_inp, gate_top_k_idx, self.expert_fn_single if fmoe_faster_schedule else self.expert_fn,
             self.num_expert, self.world_size,
-            experts=self.experts,
-            is_first_micro_batch=is_first_micro_batch,
-            is_last_micro_batch=is_last_micro_batch,
-            force_no_shadow=force_no_shadow
+            experts=self.experts
         )
 
         # recover deleted tensors
         if self.mask is not None and self.mask_dict is not None:
-            
+
             def recover_func(tensor):
                 # to: (BxL') x top_k x dim
                 dim = tensor.shape[-1]
@@ -443,5 +309,4 @@ class FMoE(nn.Module):
         assert all(
             [batch_size == moe_outp_batch_size[0] for batch_size in moe_outp_batch_size]
         ), "MoE outputs must have the same batch size"
-
         return moe_outp

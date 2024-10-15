@@ -6,4 +6,3 @@ from .layers import FMoE
 from .linear import FMoELinear
 from .transformer import FMoETransformerMLP
 from .distributed import DistributedGroupedDataParallel
-from .megatron import MegatronMLP
