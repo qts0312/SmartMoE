@@ -1,6 +1,6 @@
 #!/bin/bash
 
-source $AEROOT/src/env.sh
+#source $AEROOT/src/env.sh
 
 set -x
 
@@ -36,39 +36,41 @@ export PROFILER_LOG_PATH=${LOG_DIR}/${LOG_PREFIX}.prof
 
 mkdir -p $PROFILER_LOG_PATH
 
-export SCHEDULER_EXEC='srun'
-export GPUS_PER_NODE=8
-
-exec_args=""
-
-exec_args+=" --exclusive"
-exec_args+=" --export=ALL"
-exec_args+=" -K"
-exec_args+=" --ntasks-per-node=${GPUS_PER_NODE}"
-exec_args+=" --gres=gpu:${GPUS_PER_NODE}"
-
-exec_args+=" -N $NNODES"
-
-if [ $NODELIST != "None" ];then
-    tmp=$(scontrol show hostnames ${NODELIST} | wc -l)
-    if [ $tmp != $NNODES ];then
-        echo "bad nodelist" $NNODES $NODELIST
-        exit 1
-    fi
-    exec_args+=" -w $NODELIST"
-fi
-
-exec_args+=" -p AE"
+#export SCHEDULER_EXEC='srun'
+#export GPUS_PER_NODE=8
+#
+#exec_args=""
+#
+#exec_args+=" --exclusive"
+#exec_args+=" --export=ALL"
+#exec_args+=" -K"
+#exec_args+=" --ntasks-per-node=${GPUS_PER_NODE}"
+#exec_args+=" --gres=gpu:${GPUS_PER_NODE}"
+#
+#exec_args+=" -N $NNODES"
+#
+#if [ $NODELIST != "None" ];then
+#    tmp=$(scontrol show hostnames ${NODELIST} | wc -l)
+#    if [ $tmp != $NNODES ];then
+#        echo "bad nodelist" $NNODES $NODELIST
+#        exit 1
+#    fi
+#    exec_args+=" -w $NODELIST"
+#fi
+#
+#exec_args+=" -p AE"
 
 LOG_FILE=${LOG_DIR}/${LOG_NAME}
 
-echo $SCHEDULER_EXEC $exec_args | tee -a ${LOG_FILE}
+#echo $SCHEDULER_EXEC $exec_args | tee -a ${LOG_FILE}
 cat $DENSE_CONFIG | tee -a ${LOG_FILE}
 cat $SPARSE_CONFIG | tee -a ${LOG_FILE}
 cat $PARALLEL_CONFIG | tee -a ${LOG_FILE}
 cat $CLUSTER_CONFIG | tee -a ${LOG_FILE}
 
-$(which $SCHEDULER_EXEC) \
-    $exec_args \
-	./pretrain_moe.sh \
-	2>&1 | tee -a ${LOG_FILE}
+./pretrain_moe.sh 2>&1 | tee -a ${LOG_FILE}
+
+#$(which $SCHEDULER_EXEC) \
+#    $exec_args \
+#	./pretrain_moe.sh \
+#	2>&1 | tee -a ${LOG_FILE}

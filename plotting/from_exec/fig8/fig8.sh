@@ -1,6 +1,6 @@
 #!/bin/bash
 
-source $AEROOT/src/env.sh
+#source $AEROOT/src/env.sh
 
 name=fig8_$(date -Iseconds)
 

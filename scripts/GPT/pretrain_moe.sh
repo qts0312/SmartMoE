@@ -2,13 +2,13 @@
 
 set -x
 
-export MASTER_ADDR=$(scontrol show JobId=$SLURM_JOB_ID | grep BatchHost | tr '=' ' ' | awk '{print $2}')
-
-export RANK=$SLURM_PROCID
-export WORLD_SIZE=$SLURM_NPROCS
-localrank=$SLURM_LOCALID
-export CUDA_VISIBLE_DEVICES=$localrank
-export NODE_RANK=$(( $RANK / $NNODES))
+#export MASTER_ADDR=$(scontrol show JobId=$SLURM_JOB_ID | grep BatchHost | tr '=' ' ' | awk '{print $2}')
+#
+#export RANK=$SLURM_PROCID
+#export WORLD_SIZE=$SLURM_NPROCS
+#localrank=$SLURM_LOCALID
+#export CUDA_VISIBLE_DEVICES=$localrank
+#export NODE_RANK=$(( $RANK / $NNODES))
 
 # ninja compiler jobs
 export MAX_JOBS=64
